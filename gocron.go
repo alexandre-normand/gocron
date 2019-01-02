@@ -66,6 +66,7 @@ type Job struct {
 	startDay time.Weekday               // Specific day of the week to start on
 	funcs    map[string]interface{}     // Map for the function task store
 	fparams  map[string]([]interface{}) // Map for function and  params of function
+	timeLoc  *time.Location             // timezone/location for the job
 	err      error
 	shouldDo bool // indicates that jobs should start before scheduling
 }
@@ -83,6 +84,7 @@ func NewJob(interval uint64) *Job {
 		startDay: time.Sunday,
 		funcs:    make(map[string]interface{}),
 		fparams:  make(map[string]([]interface{})),
+		timeLoc:  time.UTC,
 	}
 }
 
@@ -116,7 +118,7 @@ func (j *Job) run() ([]reflect.Value, error) {
 	}
 
 	j.mu.Lock()
-	j.lastRun = time.Now()
+	j.lastRun = time.Now().In(j.timeLoc)
 	j.mu.Unlock()
 
 	err := j.scheduleNextRun()
@@ -192,9 +194,41 @@ func (j *Job) At(t string) *Job {
 		j.err = err
 		return j
 	}
-	// save atTime start as duration from midnight
-	j.atTime = time.Duration(hour)*time.Hour + time.Duration(min)*time.Minute
+	// time.Date(2009, time.November, 10, 23, 0, 0, 0, time.UTC)
+	mock := time.Date(time.Now().In(j.timeLoc).Year(), time.Now().In(j.timeLoc).Month(), time.Now().In(j.timeLoc).Day(), int(hour), int(min), 0, 0, j.timeLoc)
+
+	if j.unit == "days" {
+		if time.Now().After(mock) {
+			j.lastRun = mock
+		} else {
+			j.lastRun = time.Date(time.Now().In(j.timeLoc).AddDate(0, 0, -1).Year(), time.Now().In(j.timeLoc).AddDate(0, 0, -1).Month(), time.Now().In(j.timeLoc).AddDate(0, 0, -1).Day(), hour, min, 0, 0, j.timeLoc)
+		}
+	} else if j.unit == "weeks" {
+		if time.Now().After(mock) {
+			i := mock.Weekday() - j.startDay
+			if i < 0 {
+				i = 7 + i
+			}
+			j.lastRun = time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day()-int(i), hour, min, 0, 0, j.timeLoc)
+		} else {
+			j.lastRun = time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day()-7, hour, min, 0, 0, j.timeLoc)
+		}
+	}
 	return j
+}
+
+func (j *Job) InTimeLocation(loc *time.Location) *Job {
+	j.timeLoc = loc
+	return j
+}
+
+func (j *Job) InTimeLocationWithName(locationId string) (job *Job, err error) {
+	location, err := time.LoadLocation(locationId)
+	if err != nil {
+		return j, err
+	}
+
+	return j.InTimeLocation(location), nil
 }
 
 func (j *Job) periodDuration() (time.Duration, error) {
